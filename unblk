@@ -8,6 +8,16 @@ if [ "$EUID" -ne 0 ]; then
  exit 1
 fi
 
+# Validate pattern length for specific site unblocking
+if [ $# -gt 0 ]; then
+    for pattern in "$@"; do
+        if [ ${#pattern} -lt 5 ]; then
+            echo "Error: Pattern '$pattern' is too short. Minimum length is 5 characters."
+            exit 1
+        fi
+    done
+fi
+
 # Function to validate duration
 validate_duration() {
     if ! [[ $1 =~ ^[0-9]+$ ]] || [ $1 -eq 0 ] || [ $1 -gt 480 ]; then
@@ -62,18 +72,25 @@ fi
 if [ -f ~/unblk.log ]; then
     daily_unblocks=$(count_daily_unblocks ~/unblk.log)
     if [ $daily_unblocks -ge 4 ]; then
-        echo "You have used this script $daily_unblocks times today. Please wait for a random interval between 30 and 60 seconds before proceeding. You can think if REALLY need unblocking websites now"
-        wait_time=$((30 + RANDOM % 51))
-        sleep $wait_time
+        if [ $# -eq 0 ]; then
+            # Full unblocking - use random timer
+            echo "You have used this script $daily_unblocks times today. Please wait for a random interval between 30 and 60 seconds before proceeding. You can think if REALLY need unblocking websites now"
+            wait_time=$((30 + RANDOM % 51))
+            sleep $wait_time
 
-        # Clear any extra input before waiting for the Enter press
-        while IFS= read -r -t 1 -n 1000; do : ; done
+            # Clear any extra input before waiting for the Enter press
+            while IFS= read -r -t 1 -n 1000; do : ; done
 
-        # Give the user 10 seconds to press enter, otherwise exit
-        read -t 10 -n 1 -p "Press Enter within 10 seconds to continue..." || {
-            echo "\nTime's up. Exiting."
-            exit 1
-        }
+            # Give the user 10 seconds to press enter, otherwise exit
+            read -t 10 -n 1 -p "Press Enter within 10 seconds to continue..." || {
+                echo "\nTime's up. Exiting."
+                exit 1
+            }
+        else
+            # Specific site unblocking - always use 10 second timer
+            echo "You have used this script $daily_unblocks times today. Please wait 10 seconds before proceeding."
+            sleep 10
+        fi
     fi
 fi
 
@@ -102,13 +119,16 @@ datetime=$(date "+%Y-%m-%d %H:%M:%S")
 
 # Process the hosts file
 if [ $# -eq 0 ]; then
-    # If no parameters, use the original sed command
+    # If no parameters, use the original sed command to unblock all BLOCKME sites
     sudo sed -i '' '/NEVERBLOCK/!s/.*BLOCKME.*/#&/' /etc/hosts
 else
-    # If parameters are provided, process each one
-    sudo sed -i '' -E '/NEVERBLOCK/b; s/^#//' /etc/hosts
+    # If parameters are provided, unblock only specific sites containing those patterns
+    echo "Unblocking specific sites containing: $*"
     for param in "$@"; do
-        sudo sed -i '' "/.*$param/s/^/#/" /etc/hosts
+        # Comment out lines containing the pattern (to unblock them)
+        sudo sed -i '' "/$param/s/^/#/" /etc/hosts
+        # But keep NEVERBLOCK lines uncommented
+        sudo sed -i '' "/NEVERBLOCK.*$param/s/^#//" /etc/hosts
     done
 fi
 
