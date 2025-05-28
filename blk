@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
+sudo chflags nouchg /etc/hosts
+
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+ echo "Please run as root"
+ exit 1
+fi
+
+# Uncomment all lines except those containing NEVERBLOCK
+sed -i '' '/NEVERBLOCK/!s/^#*//' /etc/hosts
+
+# Flush DNS cache
+dscacheutil -flushcache
+killall -HUP mDNSResponder
+
+# Remove any previous 'at' jobs associated with this script
+for job in $(atq | awk '{print $1}'); do
+    atrm "$job"
+done
+
+# Improving commenting style:
+sed -i -E 's/^ *//; s/^#+/#/; s/^# +/#/' /etc/hosts
+
+# Log blocking in log file
+datetime=$(date "+%Y-%m-%d %H:%M:%S")
+log_entry="$datetime; BLOCK"
+echo "$log_entry" >> ~/unblk.log
+
+echo "Websites blocked successfully."
+echo "DNS cache flushed."
+sudo chflags uchg /etc/hosts

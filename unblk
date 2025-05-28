@@ -1,0 +1,137 @@
+#!/bin/bash
+# Exit immediately if a command exits with a non-zero status.
+set -e
+sudo chflags nouchg /etc/hosts
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+ echo "Please run as root"
+ exit 1
+fi
+
+# Function to validate duration
+validate_duration() {
+    if ! [[ $1 =~ ^[0-9]+$ ]] || [ $1 -eq 0 ] || [ $1 -gt 480 ]; then
+        return 1
+    fi
+    return 0
+}
+
+# Function to calculate time difference
+time_diff() {
+    local start_time=$1
+    local end_time=$2
+    local diff=$((end_time - start_time))
+    local days=$((diff / 86400))
+    local hours=$(( (diff % 86400) / 3600 ))
+    local minutes=$(( (diff % 3600) / 60 ))
+    echo "${days}d ${hours}h ${minutes}m"
+}
+
+
+
+# Function to format duration
+format_duration() {
+    local seconds=$1
+    local days=$((seconds / 86400))
+    local hours=$(( (seconds % 86400) / 3600 ))
+    local minutes=$(( (seconds % 3600) / 60 ))
+    echo "${days}d ${hours}h ${minutes}m"
+}
+
+# Function to count unblocks in a day
+count_daily_unblocks() {
+    local today=$(date +"%Y-%m-%d")
+    cat "/Users/jiri2/unblk.log" | grep "$today.*UNBLOCK" | wc -l
+}
+
+current_time=$(date +%s)
+if [ -f ~/unblk.log ]; then
+    last_block=$(grep "BLOCK" ~/unblk.log | tail -n 1)
+    if [ -n "$last_block" ]; then
+        last_block_time=$(date -j -f "%Y-%m-%d %H:%M:%S" "$(echo $last_block | cut -d';' -f1)" +%s)
+        time_since_block=$(time_diff $last_block_time $current_time)
+        echo "Time since last block: $time_since_block"
+    else
+        echo "No previous block found in the log."
+    fi
+else
+    echo "No log file found. This might be the first run."
+fi
+
+# Check if the script has been used 4 times today
+if [ -f ~/unblk.log ]; then
+    daily_unblocks=$(count_daily_unblocks ~/unblk.log)
+    if [ $daily_unblocks -ge 4 ]; then
+        echo "You have used this script $daily_unblocks times today. Please wait for a random interval between 30 and 60 seconds before proceeding. You can think if REALLY need unblocking websites now"
+        wait_time=$((30 + RANDOM % 51))
+        sleep $wait_time
+
+        # Clear any extra input before waiting for the Enter press
+        while IFS= read -r -t 1 -n 1000; do : ; done
+
+        # Give the user 10 seconds to press enter, otherwise exit
+        read -t 10 -n 1 -p "Press Enter within 10 seconds to continue..." || {
+            echo "\nTime's up. Exiting."
+            exit 1
+        }
+    fi
+fi
+
+# Prompt for reason with minimum length check
+while true; do
+    read -p "Please enter the reason for unblocking: " reason
+    if [ ${#reason} -ge 10 ]; then
+        break
+    else
+        echo "Error: The reason must be at least 10 characters long. Please try again."
+    fi
+done
+
+# Prompt for duration
+while true; do
+    read -p "Enter unblock duration (1-480 minutes): " duration
+    if validate_duration $duration; then
+        break
+    else
+        echo "Invalid duration. Please enter a number between 1 and 480 minutes."
+    fi
+done
+
+# Get current date and time
+datetime=$(date "+%Y-%m-%d %H:%M:%S")
+
+# Process the hosts file
+if [ $# -eq 0 ]; then
+    # If no parameters, use the original sed command
+    sudo sed -i '' '/NEVERBLOCK/!s/.*BLOCKME.*/#&/' /etc/hosts
+else
+    # If parameters are provided, process each one
+    sudo sed -i '' -E '/NEVERBLOCK/b; s/^#//' /etc/hosts
+    for param in "$@"; do
+        sudo sed -i '' "/.*$param/s/^/#/" /etc/hosts
+    done
+fi
+
+# Improving commenting style:
+sed -i -E 's/^ *//; s/^#+/#/; s/^# +/#/' /etc/hosts
+
+echo "Websites unblocked successfully for $duration minutes."
+
+# Flush DNS cache
+dscacheutil -flushcache
+killall -HUP mDNSResponder
+#echo "DNS cache flushed."
+
+# Log the unblock reason, duration, and specific sites (if any)
+log_entry="$datetime; UNBLOCK; Duration: $duration minutes; Reason: $reason"
+if [ $# -ne 0 ]; then
+    log_entry+="; Specific sites: $*"
+fi
+echo "$log_entry" >> ~/unblk.log
+
+# Schedule the blocking task
+echo "sudo /Users/jiri2/blk " | at now + $duration minutes 2> /dev/null 
+#echo "Websites will be blocked again in $duration minutes."
+#echo "Unblock reason, duration, and specific sites (if any) logged in ~/unblk.log"
+
+sudo chflags uchg /etc/hosts
