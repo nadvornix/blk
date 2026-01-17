@@ -46,7 +46,7 @@ def check_root() -> None:
 
 def check_platform() -> None:
     """Ensure running on a supported platform."""
-    supported = ["darwin", "linux", "win32"]
+    supported = ["darwin", "linux"]
     if sys.platform not in supported:
         console.print(f"[red]Unsupported platform: {sys.platform}[/red]")
         sys.exit(1)

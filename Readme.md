@@ -11,7 +11,7 @@ A focus/productivity tool that blocks distracting websites by modifying `/etc/ho
 
 ## Installation
 
-Requires Python 3.8+. Supports macOS, Linux, and Windows.
+Requires Python 3.8+. Supports macOS and Linux.
 
 On Linux, you may need to install `at` for scheduled reblocking:
 ```bash

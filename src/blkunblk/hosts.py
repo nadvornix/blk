@@ -24,13 +24,12 @@ def remove_immutable_flag(path: Path = HOSTS_FILE) -> None:
                 check=False,
                 capture_output=True,
             )
-        elif sys.platform == "linux":
+        else:  # linux
             subprocess.run(
                 ["chattr", "-i", str(path)],
                 check=False,
                 capture_output=True,
             )
-        # Windows: no equivalent, skip
     except Exception as e:
         raise HostsError(f"Failed to remove immutable flag: {e}")
 
@@ -44,13 +43,12 @@ def set_immutable_flag(path: Path = HOSTS_FILE) -> None:
                 check=False,
                 capture_output=True,
             )
-        elif sys.platform == "linux":
+        else:  # linux
             subprocess.run(
                 ["chattr", "+i", str(path)],
                 check=False,
                 capture_output=True,
             )
-        # Windows: no equivalent, skip
     except Exception as e:
         raise HostsError(f"Failed to set immutable flag: {e}")
 

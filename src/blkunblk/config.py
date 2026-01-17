@@ -1,7 +1,6 @@
 """Configuration constants for blkunblk."""
 
 import os
-import sys
 from pathlib import Path
 
 
@@ -15,8 +14,6 @@ def _get_path(env_var: str, default: Path) -> Path:
 
 def _get_hosts_file() -> Path:
     """Get the hosts file path for the current platform."""
-    if sys.platform == "win32":
-        return Path(r"C:\Windows\System32\drivers\etc\hosts")
     return Path("/etc/hosts")
 
 

@@ -11,7 +11,7 @@ def flush_dns() -> None:
         subprocess.run(
             ["killall", "-HUP", "mDNSResponder"], check=False, capture_output=True
         )
-    elif sys.platform == "linux":
+    else:  # linux
         # Try systemd-resolve first, then resolvectl
         result = subprocess.run(
             ["systemd-resolve", "--flush-caches"], check=False, capture_output=True
@@ -20,5 +20,3 @@ def flush_dns() -> None:
             subprocess.run(
                 ["resolvectl", "flush-caches"], check=False, capture_output=True
             )
-    elif sys.platform == "win32":
-        subprocess.run(["ipconfig", "/flushdns"], check=False, capture_output=True)
