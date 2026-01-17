@@ -44,10 +44,11 @@ def check_root() -> None:
         sys.exit(1)
 
 
-def check_macos() -> None:
-    """Ensure running on macOS."""
-    if sys.platform != "darwin":
-        console.print("[red]macOS required[/red]")
+def check_platform() -> None:
+    """Ensure running on a supported platform."""
+    supported = ["darwin", "linux", "win32"]
+    if sys.platform not in supported:
+        console.print(f"[red]Unsupported platform: {sys.platform}[/red]")
         sys.exit(1)
 
 
@@ -87,7 +88,7 @@ def get_unblocked_domains() -> List[str]:
 
 def blk_status() -> None:
     """Show current blocking status."""
-    check_macos()
+    check_platform()
 
     # Check lockdown status
     remaining = get_lockdown_remaining()
@@ -107,7 +108,7 @@ def blk_status() -> None:
 
 def blk_lock(hours_str: str) -> None:
     """Lock unblocking for specified hours."""
-    check_macos()
+    check_platform()
     check_root()
 
     try:
@@ -133,7 +134,7 @@ def blk_lock(hours_str: str) -> None:
 
 def blk_block() -> None:
     """Block all websites."""
-    check_macos()
+    check_platform()
     check_root()
 
     try:
@@ -190,7 +191,7 @@ def blk_main() -> None:
 
 def unblk_main() -> None:
     """Entry point for unblk command - interactive website unblocker."""
-    check_macos()
+    check_platform()
     check_root()
 
     # Check for lockdown

@@ -2,6 +2,7 @@
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import List
 
@@ -17,11 +18,19 @@ class HostsError(Exception):
 def remove_immutable_flag(path: Path = HOSTS_FILE) -> None:
     """Remove the immutable flag from the hosts file."""
     try:
-        subprocess.run(
-            ["chflags", "nouchg", str(path)],
-            check=False,
-            capture_output=True,
-        )
+        if sys.platform == "darwin":
+            subprocess.run(
+                ["chflags", "nouchg", str(path)],
+                check=False,
+                capture_output=True,
+            )
+        elif sys.platform == "linux":
+            subprocess.run(
+                ["chattr", "-i", str(path)],
+                check=False,
+                capture_output=True,
+            )
+        # Windows: no equivalent, skip
     except Exception as e:
         raise HostsError(f"Failed to remove immutable flag: {e}")
 
@@ -29,11 +38,19 @@ def remove_immutable_flag(path: Path = HOSTS_FILE) -> None:
 def set_immutable_flag(path: Path = HOSTS_FILE) -> None:
     """Set the immutable flag on the hosts file."""
     try:
-        subprocess.run(
-            ["chflags", "uchg", str(path)],
-            check=False,
-            capture_output=True,
-        )
+        if sys.platform == "darwin":
+            subprocess.run(
+                ["chflags", "uchg", str(path)],
+                check=False,
+                capture_output=True,
+            )
+        elif sys.platform == "linux":
+            subprocess.run(
+                ["chattr", "+i", str(path)],
+                check=False,
+                capture_output=True,
+            )
+        # Windows: no equivalent, skip
     except Exception as e:
         raise HostsError(f"Failed to set immutable flag: {e}")
 
