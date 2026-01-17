@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blkunblk"
+version = "1.0.0"
+description = "macOS website blocker/unblocker for focus and productivity"
+readme = "Readme.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "questionary>=2.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.0.0",
+    "pytest>=7.0.0",
+]
+
+[project.scripts]
+blk = "blkunblk.cli:blk_main"
+unblk = "blkunblk.cli:unblk_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+strict = true
