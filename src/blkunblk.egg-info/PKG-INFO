@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: blkunblk
+Version: 1.0.0
+Summary: macOS website blocker/unblocker for focus and productivity
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: questionary>=2.0.0
+Requires-Dist: rich>=13.0.0
+Provides-Extra: dev
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+
+Readme

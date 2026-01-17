@@ -1,157 +1,242 @@
-#!/bin/bash
-# Exit immediately if a command exits with a non-zero status.
-set -e
-sudo chflags nouchg /etc/hosts
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
- echo "Please run as root"
- exit 1
-fi
+#!/bin/zsh
+# macOS zsh interactive unblocker (sed-only, BSD-safe)
+set -euo pipefail
 
-# Validate pattern length for specific site unblocking
-if [ $# -gt 0 ]; then
-    for pattern in "$@"; do
-        if [ ${#pattern} -lt 5 ]; then
-            echo "Error: Pattern '$pattern' is too short. Minimum length is 5 characters."
-            exit 1
-        fi
+# ---------- Platform & deps ----------
+[[ "$OSTYPE" == darwin* ]] || { print -u2 "macOS required."; exit 1; }
+[[ -n "${ZSH_VERSION-}" ]] || { print -u2 "Run under zsh."; exit 1; }
+command -v gum >/dev/null 2>&1 || { print -u2 "brew install gum"; exit 1; }
+command -v at  >/dev/null 2>&1 || { print -u2 "Install/enable 'at' (atrun)."; }
+
+# ---------- Config ----------
+HOSTS="/etc/hosts"
+FOCUS_DIR="$HOME/.focus"
+RECENTS_FILE="$FOCUS_DIR/recents"
+LOG_FILE="$HOME/unblk.log"
+RECENTS_MAX=3
+MIN_MIN=1
+MAX_MIN=480
+BLK_PATH="/Users/jiri2/blk"   # adjust if needed
+
+# ---------- Root & immutability ----------
+if [[ "$EUID" -ne 0 ]]; then
+  print -u2 "Use: sudo $0"
+  exit 1
+fi
+mkdir -p "$FOCUS_DIR"
+touch "$RECENTS_FILE" "$LOG_FILE"
+sudo chflags nouchg "$HOSTS" 2>/dev/null || true
+
+# Normalize /etc/hosts: uncomment all lines except those containing NEVERBLOCK
+# This ensures the file is in a proper state, especially if manually edited
+sudo sed -i '' '/NEVERBLOCK/!s/^#*//' "$HOSTS" || { print -u2 "Error: Failed to normalize $HOSTS"; exit 1; }
+
+# ---------- Debug helper ----------
+dbg() { [[ -n "${FOCUS_DEBUG-}" ]] && print -u2 "DEBUG: $*"; }
+
+# ---------- Small utils ----------
+trim_ws() { sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
+ere_escape(){ sed -E 's/[][\.^$*+?|(){}]/\\&/g'; }
+
+is_valid_domain() {
+  local d="$1"
+  [[ "$d" == "localhost" ]] && return 0
+  if [[ ${#d} -le 253 && "$d" =~ ^([a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,63}$ ]]; then
+    IFS='.' read -A parts <<< "$d"
+    for p in "${parts[@]}"; do
+      [[ "$p" == -* || "$p" == *- ]] && return 1
     done
-fi
-
-# Function to validate duration
-validate_duration() {
-    if ! [[ $1 =~ ^[0-9]+$ ]] || [ $1 -eq 0 ] || [ $1 -gt 480 ]; then
-        return 1
-    fi
     return 0
+  fi
+  return 1
 }
 
-# Function to calculate time difference
-time_diff() {
-    local start_time=$1
-    local end_time=$2
-    local diff=$((end_time - start_time))
-    local days=$((diff / 86400))
-    local hours=$(( (diff % 86400) / 3600 ))
-    local minutes=$(( (diff % 3600) / 60 ))
-    echo "${days}d ${hours}h ${minutes}m"
+list_recents(){ head -n "$RECENTS_MAX" "$RECENTS_FILE" | awk 'NF'; }
+update_recents(){
+  local tmp; tmp="$(mktemp)"; cp "$RECENTS_FILE" "$tmp" 2>/dev/null || true
+  for d in "$@"; do
+    grep -Fxv "$d" "$tmp" > "$tmp.2" || true
+    print -- "$d" | cat - "$tmp.2" | head -n "$RECENTS_MAX" > "$tmp"
+    rm -f "$tmp.2"
+  done
+  mv "$tmp" "$RECENTS_FILE"
+}
+
+pick_duration(){
+  local c d
+  c=$(gum choose --header "Duration (minutes)" "10" "25" "60" "Custom") || { print -u2 "Duration required."; exit 1; }
+  case "$c" in
+    10|25|60) d="$c" ;;
+    Custom)
+      d=$(gum input --placeholder "Enter minutes ($MIN_MIN–$MAX_MIN)") || { print -u2 "Minutes required."; exit 1; }
+      d="$(print -r -- "$d" | trim_ws)"
+      [[ "$d" =~ ^[0-9]+$ ]] || { print -u2 "Invalid minutes."; exit 1; }
+      (( d>=MIN_MIN && d<=MAX_MIN )) || { print -u2 "Minutes must be $MIN_MIN–$MAX_MIN."; exit 1; }
+      ;;
+    *) print -u2 "Invalid selection."; exit 1;;
+  esac
+  echo "$d"
+}
+
+require_reason_minlen(){
+  local min="$1" prompt="${2:-Reason (min $1 chars)}" r=""
+  while true; do
+    r=$(gum input --placeholder "$prompt") || { print -u2 "Reason required."; exit 1; }
+    r="$(print -r -- "$r" | trim_ws)"
+    (( ${#r} >= min )) && { print -r -- "$r"; return 0; }
+    gum style --foreground 196 "Reason must be at least $min characters."
+  done
+}
+
+# Duration-scaled wait (Option A), with max tier capped to 30–90s for specific
+scaled_wait_specific(){
+  local d="$1" lo=0 hi=0
+  if   (( d <= 20 ));   then lo=0;  hi=2
+  elif (( d <= 60 ));   then lo=5;  hi=12
+  elif (( d <= 180 ));  then lo=15; hi=45
+  else                     lo=30; hi=90
+  fi
+  local span=$((hi - lo + 1)); local r=$(( RANDOM % span ))
+  echo $(( lo + r ))
+}
+
+# --- Time gate & captcha helpers ---
+
+is_before_10am() {
+  # 0..9 -> true, 10..23 -> false
+  local hh; hh="$(/bin/date +%H)"
+  (( 10#${hh} < 10 ))
+}
+
+gen_token() {
+  # $1 = length
+  local n="${1:-20}"
+  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$n"
+}
+
+require_all_captcha() {
+  # one attempt; abort on mismatch
+  local n="${1:-20}"
+  local tok; tok="$(gen_token "$n")"
+  # show nicely
+  gum style --border normal --padding "1 2" --align center --bold --width 50 "$tok" >/dev/tty
+  local typed
+  typed="$(gum input --placeholder "Retype the string above exactly" </dev/tty)"
+  if [[ "$typed" != "$tok" ]]; then
+    gum style --foreground 196 "Captcha mismatch. Aborting." >/dev/tty
+    return 1
+  fi
+  return 0
 }
 
 
+wait_random_secs(){ local s="$1"; (( s>0 )) && gum spin --title "Waiting ${s}s…" -- sleep "$s"; }
+confirm_window_press_enter(){ local t="$1"; print "Press Enter within ${t}s to confirm…"; read -t "$t" -r _ || return 1; }
 
-# Function to format duration
-format_duration() {
-    local seconds=$1
-    local days=$((seconds / 86400))
-    local hours=$(( (seconds % 86400) / 3600 ))
-    local minutes=$(( (seconds % 3600) / 60 ))
-    echo "${days}d ${hours}h ${minutes}m"
+flush_dns(){ sudo dscacheutil -flushcache || true; sudo killall -HUP mDNSResponder 2>/dev/null || true; }
+log_event(){ local ts; ts="$(date '+%Y-%m-%d %H:%M:%S')"; print -- "$ts; UNBLOCK; Duration: $1 minutes; Reason: $2${3:+; Specific: $3}" >> "$LOG_FILE"; }
+schedule_reblock(){ local m="$1"; echo "sudo $BLK_PATH " | at now + "$m" minutes 2>/dev/null || true; }
+
+# ---------- SED-based edits (BSD-safe, no braces) ----------
+
+# SPECIFIC: for each domain, comment any non-comment line containing it,
+# unless the line contains NEVERBLOCK.
+comment_lines_containing_domains(){
+  local d pat
+  for d in "$@"; do
+    pat="$(printf '%s' "$d" | ere_escape)"
+    dbg "sed specific pattern: /$pat/"
+    sudo sed -E -i '' \
+      -e '/NEVERBLOCK/ b' \
+      -e "/$pat/ !b" \
+      -e '/^[[:space:]]*#/ b' \
+      -e 's/^/# /' \
+      "$HOSTS" || { print -u2 "Error: sed failed for domain: $d"; return 1; }
+  done
 }
 
-# Function to count unblocks in a day
-count_daily_unblocks() {
-    local today=$(date +"%Y-%m-%d")
-    cat "/Users/jiri2/unblk.log" | grep "$today.*UNBLOCK" | wc -l
+# ALL: comment any un-commented 0.0.0.0/127.0.0.1 host line,
+# unless the line contains NEVERBLOCK.
+comment_all_block_lines(){
+  dbg "sed ALL: comment lines with BLOCKME (skip NEVERBLOCK)"
+  sudo sed -E -i '' \
+    -e '/NEVERBLOCK/ b' \
+    -e '/BLOCKME/ !b' \
+    -e 's/^/# /' \
+    "$HOSTS" || { print -u2 "Error: sed failed for ALL unblock"; return 1; }
 }
 
-current_time=$(date +%s)
-if [ -f ~/unblk.log ]; then
-    last_block=$(grep "BLOCK" ~/unblk.log | tail -n 1)
-    if [ -n "$last_block" ]; then
-        last_block_time=$(date -j -f "%Y-%m-%d %H:%M:%S" "$(echo $last_block | cut -d';' -f1)" +%s)
-        time_since_block=$(time_diff $last_block_time $current_time)
-        echo "Time since last block: $time_since_block"
+# ---------- Interactive flow ----------
+# 1. Ask for reason first (standardized length requirement)
+REASON="$(require_reason_minlen 6 "Reason (min 6 chars)")"
+
+# 2. Ask for duration
+DUR="$(pick_duration)"
+
+# 3. Ask for domains/ALL
+initial=$(gum input --placeholder "What do you want to unblock? (ALL or space-separated domains) — leave empty to pick from Recents") || { print -u2 "Cancelled."; exit 1; }
+initial="$(print -r -- "$initial" | trim_ws)"
+
+is_all=0
+typeset -a domains; domains=()
+
+if [[ -z "$initial" ]]; then
+  recs=("${(@f)$(list_recents)}")
+  if (( ${#recs[@]} )); then
+    sel=$(printf "%s\n%s\n" "⎆ Type domains manually…" "${recs[@]}" | gum choose --no-limit --header "Select domains (space toggles) or choose '⎆ Type domains manually…'") || { print -u2 "No selection."; exit 1; }
+    if [[ "$sel" == "⎆ Type domains manually…" ]]; then
+      manual=$(gum input --placeholder "Enter space-separated domains") || { print -u2 "No domains provided."; exit 1; }
+      manual="$(print -r -- "$manual" | trim_ws)"; [[ -z "$manual" ]] && { print -u2 "No domains provided."; exit 1; }
+      IFS=' ' read -A domains <<< "$manual"
     else
-        echo "No previous block found in the log."
+      IFS=$'\n' read -A chosen <<< "$sel"; domains=("${chosen[@]}")
     fi
+  else
+    manual=$(gum input --placeholder "No recents yet. Enter space-separated domains") || { print -u2 "No domains provided."; exit 1; }
+    manual="$(print -r -- "$manual" | trim_ws)"; [[ -z "$manual" ]] && { print -u2 "No domains provided."; exit 1; }
+    IFS=' ' read -A domains <<< "$manual"
+  fi
 else
-    echo "No log file found. This might be the first run."
+  if [[ "${initial:l}" == "all" ]]; then
+    is_all=1
+  else
+    IFS=' ' read -A domains <<< "$initial"
+  fi
 fi
 
-# Check if the script has been used 4 times today
-if [ -f ~/unblk.log ]; then
-    daily_unblocks=$(count_daily_unblocks ~/unblk.log)
-    if [ $daily_unblocks -ge 4 ]; then
-        if [ $# -eq 0 ]; then
-            # Full unblocking - use random timer
-            echo "You have used this script $daily_unblocks times today. Please wait for a random interval between 30 and 60 seconds before proceeding. You can think if REALLY need unblocking websites now"
-            wait_time=$((30 + RANDOM % 51))
-            sleep $wait_time
-
-            # Clear any extra input before waiting for the Enter press
-            while IFS= read -r -t 1 -n 1000; do : ; done
-
-            # Give the user 10 seconds to press enter, otherwise exit
-            read -t 10 -n 1 -p "Press Enter within 10 seconds to continue..." || {
-                echo "\nTime's up. Exiting."
-                exit 1
-            }
-        else
-            # Specific site unblocking - always use 10 second timer
-            echo "You have used this script $daily_unblocks times today. Please wait 10 seconds before proceeding."
-            sleep 10
-        fi
-    fi
+if (( is_all == 1 && ${#domains[@]} > 0 )); then print -u2 "Choose ALL or specific, not both."; exit 1; fi
+if (( is_all == 0 )); then
+  (( ${#domains[@]} > 0 )) || { print -u2 "No domains provided."; exit 1; }
+  for d in "${domains[@]}"; do is_valid_domain "$d" || { print -u2 "Invalid domain: $d"; exit 1; }; done
 fi
 
-# Prompt for reason with minimum length check
-while true; do
-    read -p "Please enter the reason for unblocking: " reason
-    if [ ${#reason} -ge 10 ]; then
-        break
-    else
-        echo "Error: The reason must be at least 10 characters long. Please try again."
-    fi
-done
+if (( is_all == 1 )); then
+  #morning captcha before any wait/confirm
+  #if is_before_10am; then
+  #  require_all_captcha 20 || { sudo chflags uchg "$HOSTS" 2>/dev/null || true; exit 1; }
+  #fi
 
-# Prompt for duration
-while true; do
-    read -p "Enter unblock duration (1-480 minutes): " duration
-    if validate_duration $duration; then
-        break
-    else
-        echo "Invalid duration. Please enter a number between 1 and 480 minutes."
-    fi
-done
-
-# Get current date and time
-datetime=$(date "+%Y-%m-%d %H:%M:%S")
-
-# Process the hosts file
-if [ $# -eq 0 ]; then
-    # If no parameters, use the original sed command to unblock all BLOCKME sites
-    sudo sed -i '' '/NEVERBLOCK/!s/.*BLOCKME.*/#&/' /etc/hosts
+  w=$((30 + RANDOM % 61)); gum spin --title "Preparing ALL… waiting ${w}s" -- sleep "$w"
+  confirm_window_press_enter 10 || { print -u2 "Timed out. Aborting."; sudo chflags uchg "$HOSTS" 2>/dev/null || true; exit 1; }
 else
-    # If parameters are provided, unblock only specific sites containing those patterns
-    echo "Unblocking specific sites containing: $*"
-    for param in "$@"; do
-        # Comment out lines containing the pattern (to unblock them)
-        sudo sed -i '' "/$param/s/^/#/" /etc/hosts
-        # But keep NEVERBLOCK lines uncommented
-        sudo sed -i '' "/NEVERBLOCK.*$param/s/^#//" /etc/hosts
-    done
+  w="$(scaled_wait_specific "$DUR")"; wait_random_secs "$w"
 fi
 
-# Improving commenting style:
-sed -i -E 's/^ *//; s/^#+/#/; s/^# +/#/' /etc/hosts
-
-echo "Websites unblocked successfully for $duration minutes."
-
-# Flush DNS cache
-dscacheutil -flushcache
-killall -HUP mDNSResponder
-#echo "DNS cache flushed."
-
-# Log the unblock reason, duration, and specific sites (if any)
-log_entry="$datetime; UNBLOCK; Duration: $duration minutes; Reason: $reason"
-if [ $# -ne 0 ]; then
-    log_entry+="; Specific sites: $*"
+if (( is_all == 1 )); then
+  comment_all_block_lines || { sudo chflags uchg "$HOSTS" 2>/dev/null || true; exit 1; }
+else
+  comment_lines_containing_domains "${domains[@]}" || { sudo chflags uchg "$HOSTS" 2>/dev/null || true; exit 1; }
 fi
-echo "$log_entry" >> ~/unblk.log
 
-# Schedule the blocking task
-echo "sudo /Users/jiri2/blk " | at now + $duration minutes 2> /dev/null 
-#echo "Websites will be blocked again in $duration minutes."
-#echo "Unblock reason, duration, and specific sites (if any) logged in ~/unblk.log"
+flush_dns
 
-sudo chflags uchg /etc/hosts
+if (( is_all == 1 )); then
+  log_event "$DUR" "$REASON"
+else
+  log_event "$DUR" "$REASON" "${(j:, :)domains}"
+  update_recents "${domains[@]}"
+fi
+
+schedule_reblock "$DUR"
+sudo chflags uchg "$HOSTS" 2>/dev/null || true
+gum style --foreground 46 "Done: $([[ $is_all -eq 1 ]] && echo ALL || echo "${(j:, :)domains}") for ${DUR}m"

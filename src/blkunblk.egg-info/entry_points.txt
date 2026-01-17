@@ -1,0 +1,3 @@
+[console_scripts]
+blk = blkunblk.cli:blk_main
+unblk = blkunblk.cli:unblk_main
