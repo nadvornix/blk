@@ -7,6 +7,7 @@ set -euo pipefail
 [[ -n "${ZSH_VERSION-}" ]] || { print -u2 "Run under zsh."; exit 1; }
 command -v gum >/dev/null 2>&1 || { print -u2 "brew install gum"; exit 1; }
 command -v at  >/dev/null 2>&1 || { print -u2 "Install/enable 'at' (atrun)."; }
+zmodload zsh/datetime 2>/dev/null || true
 
 # ---------- Config ----------
 HOSTS="/etc/hosts"
@@ -37,6 +38,7 @@ dbg() { [[ -n "${FOCUS_DEBUG-}" ]] && print -u2 "DEBUG: $*"; }
 # ---------- Small utils ----------
 trim_ws() { sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
 ere_escape(){ sed -E 's/[][\.^$*+?|(){}]/\\&/g'; }
+flush_tty(){ while read -t 0 -k 1 _ </dev/tty 2>/dev/null; do :; done; }
 
 is_valid_domain() {
   local d="$1"
@@ -102,10 +104,9 @@ scaled_wait_specific(){
 
 # --- Time gate & captcha helpers ---
 
-is_before_10am() {
-  # 0..9 -> true, 10..23 -> false
+is_before_noon() {
   local hh; hh="$(/bin/date +%H)"
-  (( 10#${hh} < 10 ))
+  (( 10#${hh} < 12 ))
 }
 
 gen_token() {
@@ -115,15 +116,43 @@ gen_token() {
 }
 
 require_all_captcha() {
-  # one attempt; abort on mismatch
-  local n="${1:-20}"
+  local n="${1:-30}"
   local tok; tok="$(gen_token "$n")"
-  # show nicely
-  gum style --border normal --padding "1 2" --align center --bold --width 50 "$tok" >/dev/tty
-  local typed
-  typed="$(gum input --placeholder "Retype the string above exactly" </dev/tty)"
+
+  print >/dev/tty
+  gum style --border normal --padding "1 2" --align center --bold --width 60 "$tok" >/dev/tty
+  print >/dev/tty
+  print -n "Retype it (paste disabled): " >/dev/tty
+
+  flush_tty
+  local typed="" ch
+  local prev_ts=$EPOCHREALTIME cur_ts
+
+  while true; do
+    read -k 1 ch </dev/tty
+    if [[ "$ch" == $'\n' || "$ch" == $'\r' ]]; then break; fi
+    if [[ "$ch" == $'\x7f' || "$ch" == $'\b' ]]; then
+      if (( ${#typed} > 0 )); then
+        typed="${typed:0:-1}"
+        print -n $'\b \b' >/dev/tty
+      fi
+      prev_ts=$EPOCHREALTIME
+      continue
+    fi
+    cur_ts=$EPOCHREALTIME
+    if (( ${#typed} > 0 )) && (( (cur_ts - prev_ts) < 0.03 )); then
+      print >/dev/tty
+      gum style --foreground 196 "Paste detected. Aborting." >/dev/tty
+      return 1
+    fi
+    prev_ts=$cur_ts
+    typed+="$ch"
+    print -n "$ch" >/dev/tty
+  done
+  print >/dev/tty
+
   if [[ "$typed" != "$tok" ]]; then
-    gum style --foreground 196 "Captcha mismatch. Aborting." >/dev/tty
+    gum style --foreground 196 "Mismatch. Aborting." >/dev/tty
     return 1
   fi
   return 0
@@ -211,12 +240,13 @@ if (( is_all == 0 )); then
 fi
 
 if (( is_all == 1 )); then
-  #morning captcha before any wait/confirm
-  #if is_before_10am; then
-  #  require_all_captcha 20 || { sudo chflags uchg "$HOSTS" 2>/dev/null || true; exit 1; }
-  #fi
+  # Before noon: require typing 30 random chars to unblock ALL (no copy-paste)
+  if is_before_noon; then
+    require_all_captcha 30 || { sudo chflags uchg "$HOSTS" 2>/dev/null || true; exit 1; }
+  fi
 
   w=$((30 + RANDOM % 61)); gum spin --title "Preparing ALL… waiting ${w}s" -- sleep "$w"
+  flush_tty
   confirm_window_press_enter 10 || { print -u2 "Timed out. Aborting."; sudo chflags uchg "$HOSTS" 2>/dev/null || true; exit 1; }
 else
   w="$(scaled_wait_specific "$DUR")"; wait_random_secs "$w"
